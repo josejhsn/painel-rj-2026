@@ -13,9 +13,12 @@ O que faz:
 Como rodar de novo (os dados mudam quase todo dia):
   python coletor.py
 
+Fontes automatizadas: Portal Zuk, Mega Leiloes, RJ Leiloes, Juliana Vettorazzo,
+Rymer Leiloes, Gustavo Lourenco Leiloeiro.
+
 Fontes que AINDA NAO sao raspadas automaticamente (bloqueio anti-robo ou exigem
-varrer leilao por leilao) ficam como links de checagem manual dentro do HTML gerado:
-  Caixa, Santander, Itau, Bradesco, RJ Leiloes, Rymer, Gustavo Lourenco, Juliana Vettorazzo.
+varrer leilao por leilao com estrutura propria) ficam como links de checagem manual
+dentro do HTML gerado: Caixa, Santander, Itau, Bradesco, Biasi Leiloes.
 """
 
 import json
@@ -24,6 +27,9 @@ import re
 import unicodedata
 from collections import Counter
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+FUSO_BRASILIA = ZoneInfo("America/Sao_Paulo")
 
 import requests
 
@@ -46,6 +52,10 @@ MEGA_MAX_PAGINAS = 15
 FONTES_CONTATO = {
     "Portal Zuk": {"site": "https://www.portalzuk.com.br", "obs": "Habilitacao e lances pelo proprio site; sem telefone/e-mail por lote."},
     "Mega Leiloes": {"site": "https://www.megaleiloes.com.br", "obs": "Habilitacao e lances pelo proprio site; sem telefone/e-mail por lote."},
+    "RJ Leiloes": {"site": "https://www.rjleiloes.com.br", "obs": "Habilitacao e lances pelo proprio site; sem telefone/e-mail por lote."},
+    "Juliana Vettorazzo": {"site": "https://www.jvleiloes.lel.br", "obs": "Habilitacao e lances pelo proprio site; sem telefone/e-mail por lote."},
+    "Rymer Leiloes": {"site": "https://rymerleiloes.com.br", "obs": "Habilitacao e lances pelo proprio site; sem telefone/e-mail por lote."},
+    "Gustavo Lourenco": {"site": "https://gustavoleiloeiro.com.br", "obs": "Habilitacao e lances pelo proprio site; sem telefone/e-mail por lote."},
 }
 
 # Corredor de interesse, na ordem geografica pedida (usado para ordenar e destacar).
@@ -103,6 +113,18 @@ BAIRROS_LAUDEMIO_POSSIVEL = {
     "copacabana", "leme", "flamengo", "catete", "gloria", "botafogo", "urca",
 }
 
+# Municipios do estado do RJ diferentes da capital - usado para reconhecer quando um
+# endereco tipo "Bairro/RJ" na verdade se refere a OUTRA cidade (a convencao comum nesses
+# sites e' omitir "Rio de Janeiro" quando e' a capital, mas nomear a cidade quando nao e').
+OUTROS_MUNICIPIOS_RJ = {
+    "niteroi", "cabo frio", "teresopolis", "teresopo", "petropolis", "nova friburgo",
+    "angra dos reis", "volta redonda", "duque de caxias", "nilopolis", "nil", "sao goncalo",
+    "itaborai", "marica", "queimados", "nova iguacu", "belford roxo", "mesquita",
+    "nova iguaçu", "nova iguac", "itaguai", "seropedica", "nl", "araruama", "saquarema",
+    "rio das ostras", "macae", "campos dos goytacazes", "resende", "barra do pirai",
+    "paraty", "mangaratiba", "guapimirim", "cachoeiras de macacu", "itaperuna",
+}
+
 COMISSAO_LEILOEIRO_PCT = 5.0
 ITBI_RJ_PCT = 3.0
 CARTORIO_PCT = 1.5
@@ -113,10 +135,6 @@ OUTRAS_FONTES = [
     {"nome": "Imoveis Banco Santander (via Zuk)", "url": "https://www.portalzuk.com.br/leilao-de-imoveis/v/banco-santander"},
     {"nome": "Imoveis Itau", "url": "https://www.itau.com.br/imoveis-itau"},
     {"nome": "Imoveis Bradesco (leiloes)", "url": "https://banco.bradesco/html/classic/produtos-servicos/leiloes/index.shtm"},
-    {"nome": "RJ Leiloes", "url": "https://www.rjleiloes.com.br"},
-    {"nome": "Rymer Leiloes", "url": "https://rymerleiloes.com.br"},
-    {"nome": "Gustavo Lourenco Leiloeiro", "url": "https://gustavoleiloeiro.com.br"},
-    {"nome": "Juliana Vettorazzo Leiloeira", "url": "https://www.jvleiloes.lel.br"},
     {"nome": "Biasi Leiloes", "url": "https://www.biasileiloes.com.br"},
     {"nome": "TJRJ - Leilao de Imoveis (editais oficiais)", "url": "https://portaltj.tjrj.jus.br/leilao-imoveis"},
 ]
@@ -486,6 +504,357 @@ def parse_cards_mega(html):
 
     vistos = set()
     unicos = []
+    for im in imoveis:
+        if im["id"] in vistos:
+            continue
+        vistos.add(im["id"])
+        unicos.append(im)
+    return unicos
+
+
+# --------------------------------------------------------------------------------------
+# Coleta - plataforma Soleon (RJ Leiloes, Juliana Vettorazzo Leiloeira)
+# Sites diferentes, mesmo motor de leiloes -> mesma estrutura de card, um parser serve os dois.
+# --------------------------------------------------------------------------------------
+
+SOLEON_SITES = {
+    "RJ Leiloes": "https://www.rjleiloes.com.br",
+    "Juliana Vettorazzo": "https://www.jvleiloes.lel.br",
+}
+SOLEON_MAX_EVENTOS = 10
+
+SOLEON_LOTE_START_RE = re.compile(r'<div class="col-12 mb-4">')
+SOLEON_TITULO_RE = re.compile(r"<h5>([^<]+)</h5>")
+SOLEON_CIDADE_RE = re.compile(r"<b>Cidade:</b>\s*([^<]+?)\s*(?:<br|</div)")
+SOLEON_ENDERECO_RE = re.compile(r"<b>Endere.o:</b>\s*([^<]+?)\s*(?:<br|</div)")
+SOLEON_MODALIDADE_RE = re.compile(r'label_lote ([a-z_]+)"')
+SOLEON_PRECO_LABEL_RE = re.compile(r"<h5>([^<]*)</h5>\s*<h4[^>]*>R\$\s*([\d.,]+)")
+SOLEON_URL_RE = re.compile(r'href="(https?://[^"]+/item/\d+/detalhes[^"]*)"')
+SOLEON_IMG_RE = re.compile(r"background:\s*url\('([^']+)'\)")
+SOLEON_AREA_RE = re.compile(r"(\d+[\d.,]*)\s*m.\s*(?:de\s*.rea\s*)?(?:constru.da|privativa|.til)", re.I)
+
+
+def buscar_eventos_soleon(session, base_url):
+    r = session.get(base_url, timeout=30)
+    ids = sorted(set(re.findall(r"/leilao/(\d+)/lotes", r.text)), key=int, reverse=True)
+    return ids[:SOLEON_MAX_EVENTOS]
+
+
+def parse_cards_soleon(html, fonte):
+    starts = [m.start() for m in SOLEON_LOTE_START_RE.finditer(html)]
+    blocos = [
+        html[starts[i]: starts[i + 1] if i + 1 < len(starts) else starts[i] + 3500]
+        for i in range(len(starts))
+    ]
+    imoveis = []
+    for bloco in blocos:
+        url_m = SOLEON_URL_RE.search(bloco)
+        if not url_m:
+            continue
+        url = url_m.group(1)
+        lote_id_m = re.search(r"/item/(\d+)/", url)
+        lote_id = lote_id_m.group(1) if lote_id_m else str(abs(hash(url)))
+
+        titulo_m = SOLEON_TITULO_RE.search(bloco)
+        titulo = titulo_m.group(1).strip() if titulo_m else ""
+
+        cidade_m = SOLEON_CIDADE_RE.search(bloco)
+        cidade = cidade_m.group(1).strip() if cidade_m else "Rio de Janeiro"
+        if "rio de janeiro" not in normaliza(cidade):
+            continue
+
+        endereco_m = SOLEON_ENDERECO_RE.search(bloco)
+        endereco = endereco_m.group(1).strip() if endereco_m else titulo
+
+        bairro = "Nao informado"
+        m_bairro = re.search(r"(?:,\s*|\bem\s+)([A-Za-zÀ-ú' ]+?)\s*/\s*RJ", titulo, re.I)
+        if m_bairro:
+            bairro = re.sub(r"^(em|na|no)\s+", "", m_bairro.group(1).strip(), flags=re.I)
+        if normaliza(bairro) in OUTROS_MUNICIPIOS_RJ:
+            continue  # outra cidade do estado, nao a capital
+        bairro_norm = normaliza(bairro)
+
+        modalidade_m = SOLEON_MODALIDADE_RE.search(bloco)
+        modalidade = "Verificar edital"
+        if modalidade_m:
+            classe = modalidade_m.group(1)
+            if "venda_direta" in classe:
+                modalidade = "Venda direta"
+            elif "extrajudicial" in classe:
+                modalidade = "Extrajudicial (banco)"
+            elif "judicial" in classe:
+                modalidade = "Judicial"
+
+        preco, preco_label = None, "Valor"
+        pm = SOLEON_PRECO_LABEL_RE.search(bloco)
+        if pm:
+            preco_label = pm.group(1).strip() or "Valor"
+            preco = parse_valor_br(pm.group(2))
+
+        tipo_m = re.match(r"^([A-Za-zÀ-ú]+)", titulo)
+        tipo = tipo_m.group(1) if tipo_m else "Nao informado"
+
+        area_m = SOLEON_AREA_RE.search(bloco)
+        area_m2 = parse_valor_br(area_m.group(1)) if area_m else None
+
+        img_m = SOLEON_IMG_RE.search(bloco)
+        imagem = img_m.group(1) if img_m else None
+
+        imoveis.append({
+            "id": f"soleon-{lote_id}",
+            "fonte": fonte,
+            "tipo": tipo,
+            "cidade": cidade,
+            "bairro": bairro,
+            "bairro_norm": bairro_norm,
+            "endereco": endereco,
+            "preco": preco,
+            "preco_label": preco_label,
+            "desconto_pct": None,
+            "data_leilao": "",
+            "area_m2": area_m2,
+            "quartos": None,
+            "vagas": None,
+            "ocupacao": "Verificar edital",
+            "comitente": None,
+            "modalidade": modalidade,
+            "pracas": None,
+            "etapas": [],
+            "status_leilao": "",
+            "imagem_url": imagem,
+            "pagina_url": url,
+            "no_corredor": bairro_norm in CORREDOR_BAIRROS,
+        })
+    return imoveis
+
+
+def coletar_soleon(nome_fonte, base_url):
+    session = requests.Session()
+    session.headers.update({"User-Agent": USER_AGENT})
+    ids = buscar_eventos_soleon(session, base_url)
+    todos = []
+    for eid in ids:
+        try:
+            r = session.get(f"{base_url}/leilao/{eid}/lotes", timeout=30)
+            if r.status_code == 200:
+                todos += parse_cards_soleon(r.text, nome_fonte)
+        except Exception:
+            continue
+    vistos, unicos = set(), []
+    for im in todos:
+        if im["id"] in vistos:
+            continue
+        vistos.add(im["id"])
+        unicos.append(im)
+    return unicos
+
+
+# --------------------------------------------------------------------------------------
+# Coleta - Rymer Leiloes (plataforma "Suporte Leiloes")
+# --------------------------------------------------------------------------------------
+
+RYMER_BUSCA_URL = "https://www.rymerleiloes.com.br/busca?categoria=imoveis"
+RYMER_ARTICLE_START_RE = re.compile(r"<article>")
+RYMER_HREF_RE = re.compile(r'<a href="(/oferta/leilao/imoveis/[^"]+)"')
+RYMER_TITULO_RE = re.compile(r"<h3>([^<]+)</h3>")
+RYMER_ENDERECO_RE = re.compile(r"<h3>[^<]+</h3>\s*<p>([^<]+)</p>")
+RYMER_MODALIDADE_RE = re.compile(r'class="status-leilao[^"]*">\s*([^<]+?)\s*</span>')
+RYMER_ETAPA_RE = re.compile(r"<p>(\d.\s*Leil.o):\s*([^<]+)</p>\s*<p>Lance inicial:\s*R\$\s*([\d.,]+)</p>")
+RYMER_IMG_RE = re.compile(r'<img class="foto" src="([^"]+)"')
+RYMER_AREA_RE = re.compile(r"(\d+[\d.,]*)\s*m.\s*(?:de\s*.rea\s*)?(?:constru.da|privativa|.til)", re.I)
+
+
+def buscar_html_rymer():
+    session = requests.Session()
+    session.headers.update({"User-Agent": USER_AGENT})
+    r = session.get(RYMER_BUSCA_URL, timeout=30)
+    return r.text if r.status_code == 200 else ""
+
+
+def parse_cards_rymer(html):
+    starts = [m.start() for m in RYMER_ARTICLE_START_RE.finditer(html)]
+    blocos = [
+        html[starts[i]: starts[i + 1] if i + 1 < len(starts) else starts[i] + 2500]
+        for i in range(len(starts))
+    ]
+    imoveis = []
+    for bloco in blocos:
+        href_m = RYMER_HREF_RE.search(bloco)
+        if not href_m:
+            continue
+        url = "https://www.rymerleiloes.com.br" + href_m.group(1)
+        lote_id_m = re.search(r"/id-(\d+)/", url)
+        lote_id = lote_id_m.group(1) if lote_id_m else str(abs(hash(url)))
+
+        titulo_m = RYMER_TITULO_RE.search(bloco)
+        titulo = titulo_m.group(1).strip() if titulo_m else ""
+        if not titulo:
+            continue
+
+        endereco_m = RYMER_ENDERECO_RE.search(bloco)
+        endereco = endereco_m.group(1).strip().rstrip(".").rstrip(",") if endereco_m else titulo
+        partes_end = [p.strip() for p in endereco.split(",") if p.strip()]
+        ultimo = re.sub(r"\s*/\s*RJ$", "", partes_end[-1], flags=re.I).strip() if partes_end else ""
+        # convencao comum: "Bairro/RJ" quando e' a capital, "Cidade/RJ" quando nao e'.
+        if normaliza(ultimo) in OUTROS_MUNICIPIOS_RJ or normaliza(ultimo).startswith(tuple(OUTROS_MUNICIPIOS_RJ)):
+            continue  # fora da cidade do Rio de Janeiro
+        cidade = "Rio de Janeiro"
+        bairro = ultimo if ultimo else "Nao informado"
+        bairro_norm = normaliza(bairro)
+
+        modalidade_m = RYMER_MODALIDADE_RE.search(bloco)
+        modalidade_txt = modalidade_m.group(1).strip() if modalidade_m else ""
+        modalidade = {
+            "judicial": "Judicial", "extrajudicial": "Extrajudicial (banco)", "venda direta": "Venda direta",
+        }.get(normaliza(modalidade_txt), "Verificar edital")
+
+        etapas = []
+        for label, data, valor in RYMER_ETAPA_RE.findall(bloco):
+            etapas.append({"etapa": label.strip(), "data": data.strip(), "valor": parse_valor_br(valor)})
+        preco = etapas[0]["valor"] if etapas else None
+        preco_label = etapas[0]["etapa"] if etapas else "Lance inicial"
+        data_leilao = etapas[0]["data"] if etapas else ""
+
+        tipo_m = re.match(r"^([A-Za-zÀ-ú]+)", titulo)
+        tipo = tipo_m.group(1) if tipo_m else "Nao informado"
+
+        area_m = RYMER_AREA_RE.search(titulo) or RYMER_AREA_RE.search(bloco)
+        area_m2 = parse_valor_br(area_m.group(1)) if area_m else None
+
+        img_m = RYMER_IMG_RE.search(bloco)
+        imagem = img_m.group(1) if img_m else None
+
+        imoveis.append({
+            "id": f"rymer-{lote_id}",
+            "fonte": "Rymer Leiloes",
+            "tipo": tipo,
+            "cidade": cidade,
+            "bairro": bairro,
+            "bairro_norm": bairro_norm,
+            "endereco": endereco,
+            "preco": preco,
+            "preco_label": preco_label,
+            "desconto_pct": None,
+            "data_leilao": data_leilao,
+            "area_m2": area_m2,
+            "quartos": None,
+            "vagas": None,
+            "ocupacao": "Verificar edital",
+            "comitente": None,
+            "modalidade": modalidade,
+            "pracas": str(len(etapas)) if etapas else None,
+            "etapas": etapas,
+            "status_leilao": "",
+            "imagem_url": imagem,
+            "pagina_url": url,
+            "no_corredor": bairro_norm in CORREDOR_BAIRROS,
+        })
+
+    vistos, unicos = set(), []
+    for im in imoveis:
+        if im["id"] in vistos:
+            continue
+        vistos.add(im["id"])
+        unicos.append(im)
+    return unicos
+
+
+# --------------------------------------------------------------------------------------
+# Coleta - Gustavo Lourenco Leiloeiro (plataforma "Suporte Leiloes")
+# --------------------------------------------------------------------------------------
+
+GUSTAVO_URL = "https://gustavoleiloeiro.com.br/?tipo=todos"
+GUSTAVO_ARTICLE_START_RE = re.compile(r"<article>")
+GUSTAVO_HREF_RE = re.compile(r'<a href="(/eventos/leilao/[^"]+)"')
+GUSTAVO_NOME_RE = re.compile(r"<h3>([^<]+)</h3>")
+GUSTAVO_CIDADE_RE = re.compile(r'class="p1">\s*([^<]+?)\s*</p>')
+GUSTAVO_AREA_RE = re.compile(r'class="p2">\s*([\d.,]+)\s*m')
+GUSTAVO_BAIRRO_RE = re.compile(r'class="p3">\s*([^<]+?)\s*</p>')
+GUSTAVO_BAIRRO_TITULO_RE = re.compile(r"\b(?:EM|NA|NO)\s+([A-ZÀ-Ú][A-ZÀ-Ú' -]*?)\s*/\s*RJ", re.I)
+GUSTAVO_AREA_TITULO_RE = re.compile(r"(\d+[\d.,]*)\s*M", re.I)
+GUSTAVO_PRECO_RE = re.compile(r"Lance inicial:\s*R\$\s*([\d.,]+)")
+GUSTAVO_IMG_RE = re.compile(r'<img src="([^"]+)"')
+
+
+def buscar_html_gustavo():
+    session = requests.Session()
+    session.headers.update({"User-Agent": USER_AGENT})
+    r = session.get(GUSTAVO_URL, timeout=30)
+    return r.text if r.status_code == 200 else ""
+
+
+def parse_cards_gustavo(html):
+    starts = [m.start() for m in GUSTAVO_ARTICLE_START_RE.finditer(html)]
+    blocos = [
+        html[starts[i]: starts[i + 1] if i + 1 < len(starts) else starts[i] + 2200]
+        for i in range(len(starts))
+    ]
+    imoveis = []
+    for bloco in blocos:
+        href_m = GUSTAVO_HREF_RE.search(bloco)
+        if not href_m:
+            continue
+        url = "https://gustavoleiloeiro.com.br" + href_m.group(1)
+        lote_id_m = re.search(r"leilao/(\d+)|lote/(\d+)", href_m.group(1))
+        lote_id = next((g for g in (lote_id_m.groups() if lote_id_m else []) if g), None) or str(abs(hash(url)))
+
+        nome_m = GUSTAVO_NOME_RE.search(bloco)
+        nome = nome_m.group(1).strip() if nome_m else ""
+        if not nome:
+            continue
+
+        cidade_m = GUSTAVO_CIDADE_RE.search(bloco)
+        bairro_m = GUSTAVO_BAIRRO_RE.search(bloco)
+        if cidade_m:
+            cidade = cidade_m.group(1).strip()
+            if "rio de janeiro" not in normaliza(cidade):
+                continue
+            bairro = bairro_m.group(1).strip() if bairro_m else "Nao informado"
+        else:
+            # sem campos explicitos: bairro/cidade vem do titulo ("... EM BAIRRO/RJ")
+            bt_m = GUSTAVO_BAIRRO_TITULO_RE.search(nome)
+            bairro = bt_m.group(1).strip().title() if bt_m else "Nao informado"
+            if normaliza(bairro) in OUTROS_MUNICIPIOS_RJ or not bt_m:
+                continue  # ou e' outra cidade do RJ, ou nao deu pra confirmar que e' Rio de Janeiro
+            cidade = "Rio de Janeiro"
+        bairro_norm = normaliza(bairro)
+
+        area_m = GUSTAVO_AREA_RE.search(bloco) or GUSTAVO_AREA_TITULO_RE.search(nome)
+        area_m2 = parse_valor_br(area_m.group(1)) if area_m else None
+
+        preco_m = GUSTAVO_PRECO_RE.search(bloco)
+        preco = parse_valor_br(preco_m.group(1)) if preco_m else None
+
+        img_m = GUSTAVO_IMG_RE.search(bloco)
+        imagem = img_m.group(1) if img_m else None
+
+        imoveis.append({
+            "id": f"gustavo-{lote_id}",
+            "fonte": "Gustavo Lourenco",
+            "tipo": "Nao informado",
+            "cidade": cidade,
+            "bairro": bairro,
+            "bairro_norm": bairro_norm,
+            "endereco": nome,
+            "preco": preco,
+            "preco_label": "Lance inicial",
+            "desconto_pct": None,
+            "data_leilao": "",
+            "area_m2": area_m2,
+            "quartos": None,
+            "vagas": None,
+            "ocupacao": "Verificar edital",
+            "comitente": None,
+            "modalidade": "Verificar edital",
+            "pracas": None,
+            "etapas": [],
+            "status_leilao": "",
+            "imagem_url": imagem,
+            "pagina_url": url,
+            "no_corredor": bairro_norm in CORREDOR_BAIRROS,
+        })
+
+    vistos, unicos = set(), []
     for im in imoveis:
         if im["id"] in vistos:
             continue
@@ -1357,7 +1726,7 @@ function aplicarFiltros() {
       Nenhum imovel encontrado com esse filtro agora. Isso e normal: leiloes de apartamento
       em Zona Sul/Centro sao esporadicos e o estoque muda quase todo dia. Tente "mostrar Rio todo"
       ou confira a aba <a href="#" onclick="mudarAba('manual'); return false;">Como funciona (manual)</a>
-      &mdash; tem os links de RJ Leiloes, Rymer, Gustavo Lourenco, Biasi e Caixa, que costumam
+      &mdash; tem os links de Biasi e Caixa (fontes ainda manuais), que costumam
       ter mais opcoes na regiao do que os grandes agregadores.</div>`;
   } else {
     contagem.textContent = `${filtrado.length} imo${filtrado.length === 1 ? 'vel' : 'veis'} encontrado${filtrado.length === 1 ? '' : 's'}.`;
@@ -1535,17 +1904,20 @@ def montar_manual_html():
 
     <h3>Fontes de dados</h3>
     <h4>Automatica (atualizada a cada vez que o coletor roda)</h4>
-    <p><strong>Portal Zuk</strong> e <strong>Mega Leiloes</strong> &mdash; cidade do Rio de Janeiro,
-    todos os tipos de imovel. Entre elas cobrem leilao judicial, extrajudicial (banco) e tambem
-    lotes em <strong>venda direta</strong> (proposta aberta, sem preco fixo definido &mdash; aparece
-    como "Aberto para proposta" nos cards, o que e normal e nao um erro da ferramenta).</p>
+    <p><strong>Portal Zuk, Mega Leiloes, RJ Leiloes, Juliana Vettorazzo, Rymer Leiloes</strong> e
+    <strong>Gustavo Lourenco Leiloeiro</strong> &mdash; foco na cidade do Rio de Janeiro, todos os
+    tipos de imovel. Juntas cobrem leilao judicial, extrajudicial (banco) e tambem lotes em
+    <strong>venda direta</strong> (proposta aberta, sem preco fixo definido &mdash; aparece como
+    "Aberto para proposta" nos cards, o que e normal e nao um erro da ferramenta). RJ Leiloes e
+    Juliana Vettorazzo rodam na mesma plataforma (Soleon); Rymer e Gustavo Lourenco tambem
+    compartilham motor (Suporte Leiloes) &mdash; por isso deu pra automatizar as quatro com o
+    mesmo tipo de leitor, mesmo sendo leiloeiros independentes.</p>
     <h4>Manual (ainda sem automacao &mdash; vale abrir de tempos em tempos)</h4>
     <p>A Caixa tem protecao anti-robo (confirmada duas vezes, inclusive contra o download publico
-    do CSV deles). Os leiloeiros proprios do Rio (RJ Leiloes, Rymer, Gustavo Lourenco, Juliana
-    Vettorazzo, Biasi Leiloes) <strong>nao estao bloqueados</strong> &mdash; publicam por evento de
-    leilao em vez de busca por bairro, o que exige varrer cada evento manualmente por enquanto.
-    Tendem a ter mais estoque na Zona Sul/Centro do que os grandes agregadores nacionais, entao
-    vale visitar direto:</p>
+    do CSV deles) e o agregador leilaoimovel.com.br tem um desafio JavaScript da Cloudflare, os
+    dois exigiriam um navegador automatizado de verdade para superar. A Biasi Leiloes nao esta
+    bloqueada, mas publica por evento de leilao com uma estrutura propria, ainda nao automatizada.
+    Vale visitar direto:</p>
     <div class="fontes-grid">
       {fontes_html}
     </div>
@@ -1580,7 +1952,7 @@ def montar_manual_html():
 def montar_html(imoveis):
     total_corredor = sum(1 for i in imoveis if i["no_corredor"])
     fontes_presentes = sorted({i["fonte"] for i in imoveis})
-    gerado_em = datetime.now().strftime("%d/%m/%Y %H:%M")
+    gerado_em = datetime.now(FUSO_BRASILIA).strftime("%d/%m/%Y %H:%M")
 
     html = HTML_TEMPLATE
     html = html.replace("__DATA_GERACAO__", gerado_em)
@@ -1642,6 +2014,33 @@ def main():
         imoveis += imoveis_mega
     except Exception as e:
         print(f"  Falhou ({e}) - seguindo sem a Mega desta vez.")
+
+    for nome_fonte, base_url in SOLEON_SITES.items():
+        print(f"Buscando imoveis na {nome_fonte}...")
+        try:
+            imoveis_soleon = coletar_soleon(nome_fonte, base_url)
+            print(f"  {len(imoveis_soleon)} imoveis na {nome_fonte}.")
+            imoveis += imoveis_soleon
+        except Exception as e:
+            print(f"  Falhou ({e}) - seguindo sem a {nome_fonte} desta vez.")
+
+    print("Buscando imoveis na Rymer Leiloes...")
+    try:
+        html_rymer = buscar_html_rymer()
+        imoveis_rymer = parse_cards_rymer(html_rymer)
+        print(f"  {len(imoveis_rymer)} imoveis na Rymer.")
+        imoveis += imoveis_rymer
+    except Exception as e:
+        print(f"  Falhou ({e}) - seguindo sem a Rymer desta vez.")
+
+    print("Buscando imoveis na Gustavo Lourenco Leiloeiro...")
+    try:
+        html_gustavo = buscar_html_gustavo()
+        imoveis_gustavo = parse_cards_gustavo(html_gustavo)
+        print(f"  {len(imoveis_gustavo)} imoveis na Gustavo Lourenco.")
+        imoveis += imoveis_gustavo
+    except Exception as e:
+        print(f"  Falhou ({e}) - seguindo sem a Gustavo Lourenco desta vez.")
 
     imoveis = [enriquecer(i) for i in imoveis]
 
