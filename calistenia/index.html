@@ -15,7 +15,7 @@
   html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font:var(--fs)/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
   body{display:flex;flex-direction:column}
   button{font:inherit;color:inherit;background:var(--panel2);border:2px solid var(--line);border-radius:14px;padding:.6em 1.1em;cursor:pointer}
-  button:hover,button:focus-visible{border-color:var(--accent);outline:none}
+  button:hover,button:focus-visible,button:focus{border-color:var(--accent);outline:none;box-shadow:0 0 0 4px rgba(73,209,125,.35)}
   button.primary{background:var(--accent);color:#06240f;border-color:var(--accent);font-weight:700}
   button.warn{background:var(--accent2);color:#2e1f00;border-color:var(--accent2);font-weight:700}
   button.ghost{background:transparent}
@@ -267,6 +267,7 @@
 <script>
 (function(){
   "use strict";
+  if (!String.prototype.padStart) String.prototype.padStart=function(n,c){ var s=String(this); c=c||" "; while(s.length<n) s=c+s; return s; };
   var D = window.DADOS;
   var CHAVE = "calistenia_v1";
   var S = carregar();           // estado persistente
@@ -281,6 +282,7 @@
   function hojeISO(){ var d=new Date(); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
   function dataBR(iso){ var p=iso.split("-"); return p[2]+"/"+p[1]+"/"+p[0]; }
   function mostrar(id){ document.querySelectorAll(".tela").forEach(function(t){ t.classList.remove("ativa"); }); $(id).classList.add("ativa"); window.scrollTo(0,0); }
+  function desfocar(){ try{ if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); }catch(e){} }
   function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
   function fmtSeg(s){ return s>=60 ? Math.floor(s/60)+" min"+(s%60?" "+(s%60)+" s":"") : s+" s"; }
 
@@ -302,10 +304,12 @@
   }
   function seriesDe(item, bloco){ return item.principal ? bloco.seriesPrincipal : bloco.series; }
 
+  function audioCtx(){ try{ if(!beep.ctx) beep.ctx=new (window.AudioContext||window.webkitAudioContext)(); if(beep.ctx.state==="suspended") beep.ctx.resume(); return beep.ctx; }catch(e){ return null; } }
+  document.addEventListener("click", function(){ audioCtx(); }, {once:true});
   function beep(){
     if (!(S.cfg && S.cfg.som)) return;
     try{
-      var ctx = beep.ctx || (beep.ctx = new (window.AudioContext||window.webkitAudioContext)());
+      var ctx = audioCtx(); if(!ctx) return;
       [0, .25, .5].forEach(function(t){
         var o=ctx.createOscillator(), g=ctx.createGain();
         o.frequency.value = 880; o.connect(g); g.connect(ctx.destination);
@@ -445,9 +449,10 @@
     $("tr-dor").value=0; $("tr-dor-regiao").value="";
     mostrarFase("aquecimento"); $("tr-posicao").textContent="Aquecimento"; $("tr-barra").style.width="0%";
     mostrar("tela-treino");
+    try{ if (navigator.wakeLock) navigator.wakeLock.request("screen").then(function(w){ T.wake=w; }).catch(function(){}); }catch(e){}
     if (!timer) timer=setInterval(function(){ if(T) $("tr-relogio").textContent=fmtSeg(Math.floor((Date.now()-T.inicio)/1000))+" de treino"; },1000);
   }
-  function mostrarFase(f){ T.fase=f; $("tr-fase-aquecimento").style.display=f==="aquecimento"?"":"none"; $("tr-fase-exercicio").style.display=f==="exercicio"?"grid":"none"; $("tr-fase-fim").style.display=f==="fim"?"":"none"; }
+  function mostrarFase(f){ T.fase=f; desfocar(); $("tr-fase-aquecimento").style.display=f==="aquecimento"?"":"none"; $("tr-fase-exercicio").style.display=f==="exercicio"?"grid":"none"; $("tr-fase-fim").style.display=f==="fim"?"":"none"; }
 
   var REGIAO_MUSC={ "Ombro":["deltoide_ant","deltoide_med","deltoide_post","peitoral","trapezio_sup"], "Cotovelo":["biceps","triceps","antebraco"], "Punho":["antebraco","deltoide_ant"], "Lombar":["lombar","abdomen","gluteo"], "Joelho":["quadriceps","posterior"], "Quadril":["gluteo","flexores_quadril","adutores"] };
   $("btn-aquecido").onclick=function(){
@@ -501,7 +506,7 @@
     $("ov-unid").textContent= tipo==="tempo"?"segundos mantidos":"repeticoes feitas";
     $("ov-reps").textContent=reg.valor;
     document.querySelectorAll("#ov-rir button").forEach(function(b){ b.classList.remove("sel"); });
-    $("ov-serie").classList.add("ativa");
+    $("ov-serie").classList.add("ativa"); desfocar();
   }
   function passo(){ var it=itemAtual(); return tipoDe(it.cadeia, D.cadeias[it.cadeia].niveis[it.nivelIdx])==="tempo"?5:1; }
   $("ov-mais").onclick=function(){ reg.valor+=passo(); $("ov-reps").textContent=reg.valor; };
@@ -511,7 +516,7 @@
   $("ov-ok").onclick=function(){
     if (reg.rir===null){ alert("Marque quantas repeticoes sobraram (RIR)."); return; }
     var it=itemAtual(); it.series.push({valor:reg.valor, rir:reg.rir});
-    $("ov-serie").classList.remove("ativa"); renderExercicio();
+    $("ov-serie").classList.remove("ativa"); desfocar(); renderExercicio();
     if (it.series.length<it.seriesAlvo) descansar(D.cadeias[it.cadeia].descanso, "Proxima: serie "+(it.series.length+1)+" de "+it.seriesAlvo);
     else { var prox=T.itens.slice(T.idx+1).filter(function(x){return !x.pulado;})[0]; descansar(D.cadeias[it.cadeia].descanso, prox ? "Proximo exercicio: "+D.cadeias[prox.cadeia].niveis[prox.nivelIdx].nome : "Ultimo exercicio feito"); }
   };
@@ -521,10 +526,10 @@
   function descansar(seg, txt){
     if (T.bloco.deload) seg=Math.round(seg*0.8);
     desc.fim=Date.now()+seg*1000; $("ov-proximo").textContent=txt; $("ov-descanso").classList.add("ativa"); $("ov-contador").classList.remove("fim");
-    clearInterval(desc.h); tick(); desc.h=setInterval(tick, 250);
+    desfocar(); clearInterval(desc.h); tick(); desc.h=setInterval(tick, 250);
   }
   function tick(){ var r=Math.ceil((desc.fim-Date.now())/1000); if (r<=0){ $("ov-contador").textContent="0"; $("ov-contador").classList.add("fim"); clearInterval(desc.h); beep(); setTimeout(fecharDescanso, 1500); } else $("ov-contador").textContent=String(r); }
-  function fecharDescanso(){ clearInterval(desc.h); $("ov-descanso").classList.remove("ativa"); }
+  function fecharDescanso(){ clearInterval(desc.h); $("ov-descanso").classList.remove("ativa"); desfocar(); }
   $("ov-pular").onclick=fecharDescanso;
   $("ov-mais30").onclick=function(){ desc.fim+=30000; tick(); };
 
@@ -572,6 +577,8 @@
   /* atalhos de teclado (controle remoto / TV) */
   document.addEventListener("keydown", function(e){
     if (!T) return;
+    var tag=(e.target&&e.target.tagName||"").toLowerCase();
+    if ((e.key==="Enter"||e.key===" ") && (tag==="button"||tag==="input"||tag==="select") && e.target.offsetParent!==null) return; // o proprio botao trata o OK do controle
     if ($("ov-descanso").classList.contains("ativa")){ if (e.key===" "||e.key==="Enter"){ e.preventDefault(); fecharDescanso(); } return; }
     if ($("ov-serie").classList.contains("ativa")){
       if (e.key==="ArrowUp"){ $("ov-mais").click(); e.preventDefault(); } else if (e.key==="ArrowDown"){ $("ov-menos").click(); e.preventDefault(); }
