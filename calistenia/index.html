@@ -6,6 +6,8 @@
 <title>Treinador de Calistenia</title>
 <style>
   :root{
+    /* Layout: painel escuro de alto contraste para TV, uma coluna no celular. */
+    color-scheme: dark;
     --bg:#0e1116; --panel:#171c24; --panel2:#1f2630; --line:#2b3340;
     --text:#eef2f7; --muted:#9aa6b6; --accent:#49d17d; --accent2:#f5b942; --danger:#f0605d;
     --primary:#ff7a45; --secondary:#ffb98a; --body:#2a313c;
@@ -26,7 +28,7 @@
   h1,h2,h3{margin:.2em 0 .4em;line-height:1.15}
   h1{font-size:2em} h2{font-size:1.5em} h3{font-size:1.15em;color:var(--muted);font-weight:600;letter-spacing:.02em;text-transform:uppercase}
   .muted{color:var(--muted)}
-  .tela{display:none;flex:1;flex-direction:column;padding:2vh 3vw;gap:1.2em;overflow:auto}
+  .tela{display:none;flex:1;flex-direction:column;padding-block:2vh;padding-left:max(16px,3vw,env(safe-area-inset-left,0px));padding-right:max(16px,3vw,env(safe-area-inset-right,0px));gap:1.2em;overflow:auto;min-width:0}
   .tela.ativa{display:flex}
   .topo{display:flex;justify-content:space-between;align-items:center;gap:1em;flex-wrap:wrap}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:20px;padding:1.2em 1.4em}
@@ -65,7 +67,7 @@
   .legenda{display:flex;gap:1em;justify-content:center;flex-wrap:wrap;font-size:.85em;color:var(--muted)}
   .legenda i{display:inline-block;width:1em;height:1em;border-radius:3px;vertical-align:-2px;margin-right:.3em}
   /* descanso */
-  .overlay{position:fixed;inset:0;background:rgba(8,10,14,.96);display:none;flex-direction:column;align-items:center;justify-content:center;gap:1em;padding:4vh 4vw;text-align:center;z-index:10}
+  .overlay{position:fixed;inset:0;background:rgba(8,10,14,.96);display:none;flex-direction:column;align-items:center;justify-content:center;gap:1em;padding-block:4vh;padding-left:max(16px,4vw,env(safe-area-inset-left,0px));padding-right:max(16px,4vw,env(safe-area-inset-right,0px));text-align:center;z-index:10}
   .overlay.ativa{display:flex}
   .contador{font-size:clamp(80px,22vw,260px);font-weight:900;line-height:1;font-variant-numeric:tabular-nums}
   .contador.fim{color:var(--accent)}
@@ -89,6 +91,9 @@
   .aviso.perigo{border-color:var(--danger);background:rgba(240,96,93,.08)}
   .check{display:flex;gap:.7em;align-items:flex-start;padding:.5em 0;border-bottom:1px solid var(--line)}
   .check input{width:1.4em;height:1.4em;margin-top:.2em}
+  .toast{position:fixed;left:50%;bottom:max(24px,env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--accent2);color:#2e1f00;font-weight:700;padding:.7em 1.2em;border-radius:14px;z-index:20;display:none;max-width:90vw}
+  .toast.ativa{display:block}
+  textarea{font:inherit;color:inherit;background:var(--panel2);border:2px solid var(--line);border-radius:12px;padding:.5em .8em;width:100%;min-height:8em;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.8em}
 </style>
 </head>
 <body>
@@ -225,6 +230,13 @@
   <div class="linha"><button class="big" id="ov-mais30">+30 s</button><button class="primary big" id="ov-pular">Pular descanso</button></div>
 </div>
 
+<!-- ===== CONFIRMACAO (overlay) ===== -->
+<div id="ov-confirmar" class="overlay">
+  <h2 id="ov-confirmar-msg"></h2>
+  <div class="linha"><button class="warn big" id="ov-confirmar-sim">Sim</button><button class="big" id="ov-confirmar-nao">Nao</button></div>
+</div>
+<div id="toast" class="toast" role="status"></div>
+
 <!-- ===== HISTORICO ===== -->
 <section id="tela-historico" class="tela">
   <div class="topo"><h1>Historico</h1><button id="btn-voltar-h">Voltar</button></div>
@@ -249,8 +261,9 @@
   <div class="topo"><h1>Ajustes</h1><button id="btn-voltar-c">Voltar</button></div>
   <div class="card">
     <h3>Dados</h3>
-    <p class="muted">Tudo fica salvo neste navegador. Exporte um backup antes de trocar de aparelho.</p>
-    <div class="linha"><button id="btn-exportar">Exportar backup (JSON)</button><label class="ghost" style="display:inline-block"><input type="file" id="in-importar" accept="application/json" style="display:none"><button type="button" id="btn-importar">Importar backup</button></label></div>
+    <p class="muted">Tudo fica salvo neste navegador. Antes de trocar de aparelho, gere o backup, copie o texto e cole no outro aparelho.</p>
+    <div class="linha"><button id="btn-exportar">Gerar backup</button><button id="btn-copiar">Copiar backup</button><button id="btn-importar-texto">Importar do texto abaixo</button><input type="file" id="in-importar" accept="application/json" style="display:none"><button type="button" id="btn-importar">Importar arquivo</button></div>
+    <textarea id="cfg-backup" placeholder="O backup aparece aqui. Para importar, cole o texto e toque em Importar do texto."></textarea>
   </div>
   <div class="card">
     <h3>Ciclo</h3>
@@ -282,6 +295,8 @@
   function hojeISO(){ var d=new Date(); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
   function dataBR(iso){ var p=iso.split("-"); return p[2]+"/"+p[1]+"/"+p[0]; }
   function mostrar(id){ document.querySelectorAll(".tela").forEach(function(t){ t.classList.remove("ativa"); }); $(id).classList.add("ativa"); window.scrollTo(0,0); }
+  function confirmar(msg, sim){ $("ov-confirmar-msg").textContent=msg; $("ov-confirmar").classList.add("ativa"); $("ov-confirmar-sim").onclick=function(){ $("ov-confirmar").classList.remove("ativa"); sim(); }; $("ov-confirmar-nao").onclick=function(){ $("ov-confirmar").classList.remove("ativa"); }; }
+  function toast(msg){ var t=$("toast"); t.textContent=msg; t.classList.add("ativa"); clearTimeout(toast.h); toast.h=setTimeout(function(){ t.classList.remove("ativa"); }, 3000); }
   function desfocar(){ try{ if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); }catch(e){} }
   function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
   function fmtSeg(s){ return s>=60 ? Math.floor(s/60)+" min"+(s%60?" "+(s%60)+" s":"") : s+" s"; }
@@ -494,7 +509,7 @@
   $("btn-serie").onclick=function(){ var it=itemAtual(); if (it.series.length>=it.seriesAlvo) proximoExercicio(); else abrirRegistro(); };
   $("btn-pular").onclick=function(){ var it=itemAtual(); it.pulado=true; it.motivo=it.motivo||"pulado"; proximoExercicio(); };
   $("btn-regredir").onclick=function(){ var it=itemAtual(); if (it.nivelIdx>0){ it.nivelIdx--; it.regrediuNaSessao=true; it.series=[]; it.motivo="regrediu durante a sessao"; renderExercicio(); } };
-  $("btn-sair").onclick=function(){ if (confirm("Sair sem salvar este treino?")){ T=null; renderHome(); mostrar("tela-home"); } };
+  $("btn-sair").onclick=function(){ confirmar("Sair sem salvar este treino?", function(){ T=null; renderHome(); mostrar("tela-home"); }); };
 
   /* registro de serie */
   var reg={valor:0, rir:null};
@@ -514,7 +529,7 @@
   document.querySelectorAll("#ov-rir button").forEach(function(b){ b.onclick=function(){ reg.rir=+b.dataset.rir; document.querySelectorAll("#ov-rir button").forEach(function(x){x.classList.remove("sel");}); b.classList.add("sel"); }; });
   $("ov-cancelar").onclick=function(){ $("ov-serie").classList.remove("ativa"); };
   $("ov-ok").onclick=function(){
-    if (reg.rir===null){ alert("Marque quantas repeticoes sobraram (RIR)."); return; }
+    if (reg.rir===null){ toast("Marque quantas repeticoes sobraram (RIR)."); return; }
     var it=itemAtual(); it.series.push({valor:reg.valor, rir:reg.rir});
     $("ov-serie").classList.remove("ativa"); desfocar(); renderExercicio();
     if (it.series.length<it.seriesAlvo) descansar(D.cadeias[it.cadeia].descanso, "Proxima: serie "+(it.series.length+1)+" de "+it.seriesAlvo);
@@ -579,6 +594,7 @@
     if (!T) return;
     var tag=(e.target&&e.target.tagName||"").toLowerCase();
     if ((e.key==="Enter"||e.key===" ") && (tag==="button"||tag==="input"||tag==="select") && e.target.offsetParent!==null) return; // o proprio botao trata o OK do controle
+    if ($("ov-confirmar").classList.contains("ativa")){ if (e.key==="Enter"){ $("ov-confirmar-sim").click(); } else if (e.key==="Escape"||e.key==="GoBack"){ $("ov-confirmar-nao").click(); } return; }
     if ($("ov-descanso").classList.contains("ativa")){ if (e.key===" "||e.key==="Enter"){ e.preventDefault(); fecharDescanso(); } return; }
     if ($("ov-serie").classList.contains("ativa")){
       if (e.key==="ArrowUp"){ $("ov-mais").click(); e.preventDefault(); } else if (e.key==="ArrowDown"){ $("ov-menos").click(); e.preventDefault(); }
@@ -625,7 +641,7 @@
       var it=el("div","nivel-item"+((S&&(S.niveis[sel]||0))===i?" atual":"")); it.appendChild(el("div","n",String(i+1)));
       var t=el("div"); t.appendChild(el("b",null,n.nome)); t.appendChild(el("div","muted",n.musculos.map(function(m){return D.musculos[m].nome;}).join(", ")));
       var ul=el("ul"); n.dicas.forEach(function(d){ul.appendChild(el("li",null,d));}); t.appendChild(ul); it.appendChild(t);
-      it.onclick=function(ev){ ev.stopPropagation(); desenharCorpo($("b-corpo"), n.musculos); if (S && confirm("Definir '"+n.nome+"' como seu nivel atual em "+c.nome+"?")){ S.niveis[sel]=i; S.prontos[sel]=0; S.fracos[sel]=0; salvar(); renderBiblioteca(sel); } };
+      it.onclick=function(ev){ ev.stopPropagation(); desenharCorpo($("b-corpo"), n.musculos); if (S && (S.niveis[sel]||0)!==i) confirmar("Definir '"+n.nome+"' como seu nivel atual em "+c.nome+"?", function(){ S.niveis[sel]=i; S.prontos[sel]=0; S.fracos[sel]=0; salvar(); renderBiblioteca(sel); }); };
       nl.appendChild(it);
     });
     det.appendChild(nl);
@@ -636,11 +652,14 @@
   /* ---------- config ---------- */
   $("btn-voltar-c").onclick=function(){ renderHome(); mostrar("tela-home"); };
   $("cfg-som").onchange=function(){ S.cfg=S.cfg||{}; S.cfg.som=$("cfg-som").checked; salvar(); };
-  $("btn-exportar").onclick=function(){ var blob=new Blob([JSON.stringify(S,null,2)],{type:"application/json"}); var a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="calistenia-backup-"+hojeISO()+".json"; a.click(); };
+  function importarTexto(txt){ try{ var d=JSON.parse(txt); if(!d.niveis||!d.sessoes) throw 0; S=d; salvar(); renderHome(); mostrar("tela-home"); toast("Backup importado."); }catch(e){ toast("Texto invalido: nao e um backup deste app."); } }
+  $("btn-exportar").onclick=function(){ $("cfg-backup").value=JSON.stringify(S); toast("Backup gerado abaixo. Toque em Copiar."); };
+  $("btn-copiar").onclick=function(){ var ta=$("cfg-backup"); if(!ta.value) ta.value=JSON.stringify(S); var ok=function(){ toast("Copiado."); }, falha=function(){ ta.focus(); ta.select(); toast("Selecione o texto e copie manualmente."); }; try{ navigator.clipboard.writeText(ta.value).then(ok, falha); }catch(e){ falha(); } };
+  $("btn-importar-texto").onclick=function(){ importarTexto($("cfg-backup").value); };
   $("btn-importar").onclick=function(){ $("in-importar").click(); };
-  $("in-importar").onchange=function(){ var f=this.files[0]; if(!f) return; var r=new FileReader(); r.onload=function(){ try{ var d=JSON.parse(r.result); if(!d.niveis||!d.sessoes) throw 0; S=d; salvar(); renderHome(); mostrar("tela-home"); }catch(e){ alert("Arquivo invalido."); } }; r.readAsText(f); };
+  $("in-importar").onchange=function(){ var f=this.files[0]; if(!f) return; var r=new FileReader(); r.onload=function(){ importarTexto(r.result); }; r.readAsText(f); };
   $("btn-reteste").onclick=function(){ prepararTeste(); mostrar("tela-inicio"); };
-  $("btn-reset").onclick=function(){ if (confirm("Apagar todos os dados deste navegador? Isso nao tem volta.")){ localStorage.removeItem(CHAVE); S=null; prepararTeste(); mostrar("tela-inicio"); } };
+  $("btn-reset").onclick=function(){ confirmar("Apagar todos os dados deste navegador? Isso nao tem volta.", function(){ try{ localStorage.removeItem(CHAVE); }catch(e){} S=null; prepararTeste(); mostrar("tela-inicio"); }); };
   function prepararTeste(){ $("t-inicio").value=hojeISO(); if (S&&S.teste){ $("t-flexoes").value=S.teste.flexoes; $("t-barras").value=S.teste.barras; $("t-suspensao").value=S.teste.suspensao; $("t-agachamentos").value=S.teste.agachamentos; $("t-hollow").value=S.teste.hollow; $("t-parada").value=S.teste.parada||0; $("t-paralelas").value=S.teste.paralelas?"1":"0"; } }
 
   /* ---------- arranque ---------- */
