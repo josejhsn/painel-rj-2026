@@ -72,8 +72,30 @@ for p in $($A pm list packages | tr -d '\r' | sed 's/^package://' | grep -iE 'ne
 done
 $A sync
 
+echo "== Instalando apps no projetor (Aptoide TV, Projectivy, Stremio TV, Just Player) =="
+APKDIR="$HOME/hy320/apks"; mkdir -p "$APKDIR"
+baixar_aptoide() { # $1 = pacote, $2 = nome do arquivo
+  local meta url
+  meta=$(curl -fsSL "https://ws75.aptoide.com/api/7/app/getMeta?package_name=$1" 2>/dev/null) || return 1
+  url=$(echo "$meta" | grep -o '"path":"[^"]*\.apk"' | head -n1 | sed 's/"path":"//; s/"$//; s#\\/#/#g')
+  [ -n "$url" ] || return 1
+  curl -fsSL "$url" -o "$APKDIR/$2" && [ -s "$APKDIR/$2" ]
+}
+instalar() { # $1 = pacote, $2 = nome amigavel
+  if $A pm list packages | tr -d '\r' | grep -q "^package:$1$"; then echo "  ja instalado: $2"; return; fi
+  if baixar_aptoide "$1" "$1.apk"; then
+    if adb -s "$IP:5555" install -r "$APKDIR/$1.apk" 2>&1 | grep -q Success; then echo "  instalado: $2"; else echo "  FALHOU ao instalar: $2"; fi
+  else
+    echo "  nao consegui baixar: $2 (instale depois pelo Aptoide TV)"
+  fi
+}
+instalar com.aptoide.tv "Aptoide TV"
+instalar com.spocky.projengmenu "Projectivy Launcher"
+instalar com.stremio.one "Stremio Android TV"
+instalar com.brouken.player "Just Player"
+
 echo "== Reiniciando o projetor =="
 adb -s "$IP:5555" reboot
 echo
 echo "PRONTO. Log salvo em $LOG"
-echo "Falta so, no projetor, pelo Aptoide TV: instalar 'Projectivy Launcher' e 'Stremio Android TV'."
+echo "Quando o projetor ligar, aperte Home no controle e escolha 'Projectivy' > Sempre."
