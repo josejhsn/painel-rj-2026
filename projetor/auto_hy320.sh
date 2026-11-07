@@ -18,16 +18,25 @@ if [ -z "$IP" ]; then
   [ -z "$MEU" ] && MEU=$(ifconfig 2>/dev/null | awk '/inet /{print $2}' | grep -v '^127' | head -n1)
   if [ -z "$MEU" ]; then echo "Nao achei o IP do tablet. Rode: bash auto_hy320.sh IP_DO_PROJETOR"; exit 1; fi
   REDE=$(echo "$MEU" | cut -d. -f1-3)
-  echo "Tablet em $MEU, varrendo $REDE.0/24 na porta 5555..."
-  for i in $(seq 1 254); do
-    (timeout 1 bash -c "echo > /dev/tcp/$REDE.$i/5555" 2>/dev/null && echo "$REDE.$i") &
-  done | sort -u > "$HOME/.hy320_cand"
-  wait
-  for c in $(cat "$HOME/.hy320_cand"); do
+  echo "Tablet em $MEU, procurando aparelhos com ADB ligado em $REDE.0/24 (leva ate 1 minuto)..."
+  command -v nmap >/dev/null 2>&1 || pkg install -y nmap >/dev/null 2>&1 || true
+  if command -v nmap >/dev/null 2>&1; then
+    CANDS=$(timeout 90 nmap -n -Pn -p5555 --open -T4 --host-timeout 3s "$REDE.0/24" -oG - 2>/dev/null | awk '/5555\/open/{print $2}')
+  else
+    CANDS=$(for i in $(seq 1 254); do (timeout 1 bash -c "echo > /dev/tcp/$REDE.$i/5555" 2>/dev/null && echo "$REDE.$i") & done; wait)
+  fi
+  if [ -z "$CANDS" ]; then
+    echo "Nenhum aparelho com ADB ligado foi encontrado na rede."
+  else
+    echo "Encontrei: $(echo $CANDS)"
+  fi
+  for c in $CANDS; do
     adb disconnect >/dev/null 2>&1
-    if adb connect "$c:5555" 2>/dev/null | grep -q connected; then
+    echo "  testando $c..."
+    if timeout 15 adb connect "$c:5555" 2>/dev/null | grep -q connected; then
       sleep 2
-      M=$(adb -s "$c:5555" shell getprop ro.product.model 2>/dev/null | tr -d '\r')
+      M=$(timeout 10 adb -s "$c:5555" shell getprop ro.product.model 2>/dev/null | tr -d '\r')
+      echo "  $c respondeu: ${M:-sem resposta (aceite o aviso na tela do projetor)}"
       if [ "$M" = "HY320" ]; then IP="$c"; break; fi
     fi
   done
@@ -39,7 +48,7 @@ if [ -z "$IP" ]; then
 fi
 
 adb disconnect >/dev/null 2>&1
-adb connect "$IP:5555" | grep -q connected || { echo "Falha ao conectar em $IP. Aceite o aviso na tela do projetor e rode de novo."; exit 1; }
+timeout 15 adb connect "$IP:5555" | grep -q connected || { echo "Falha ao conectar em $IP. Aceite o aviso na tela do projetor e rode de novo."; exit 1; }
 A="adb -s $IP:5555 shell"
 echo "Conectado: $($A getprop ro.product.model | tr -d '\r') Android $($A getprop ro.build.version.release | tr -d '\r') em $IP"
 
